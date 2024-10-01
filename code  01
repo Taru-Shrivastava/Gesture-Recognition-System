@@ -1,0 +1,147 @@
+# Install necessary libraries
+!pip install mediapipe sqlite3
+
+import cv2
+import numpy as np
+import mediapipe as mp
+import sqlite3
+import os
+
+# Initialize MediaPipe Hands
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands()
+mp_drawing = mp.solutions.drawing_utils
+
+# Connect to the SQLite Database (or create it if it doesn't exist)
+db_connection = sqlite3.connect('gesture_recognition.db')
+cursor = db_connection.cursor()
+
+# Create a table to store gesture data (if not exists)
+cursor.execute('''CREATE TABLE IF NOT EXISTS gestures (
+                    id INTEGER PRIMARY KEY,
+                    gesture_label TEXT NOT NULL,
+                    landmarks TEXT NOT NULL)''')
+
+# Function to extract hand landmarks
+def extract_landmarks(image):
+    image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    results = hands.process(image_rgb)
+    if results.multi_hand_landmarks:
+        for hand_landmarks in results.multi_hand_landmarks:
+            landmarks = []
+            for landmark in hand_landmarks.landmark:
+                landmarks.append([landmark.x, landmark.y, landmark.z])
+            return landmarks
+    return None
+
+# Function to save gesture data to the database
+def save_gesture_data(label, landmarks):
+    landmarks_str = str(landmarks)  # Convert landmarks list to string
+    cursor.execute("INSERT INTO gestures (gesture_label, landmarks) VALUES (?, ?)", (label, landmarks_str))
+    db_connection.commit()
+
+# Function to load gesture data from the database
+def load_gesture_data():
+    cursor.execute("SELECT * FROM gestures")
+    rows = cursor.fetchall()
+    data = []
+    labels = []
+    for row in rows:
+        label = row[1]
+        landmarks = eval(row[2])  # Convert string back to list
+        data.append(landmarks)
+        labels.append(label)
+    return np.array(data), np.array(labels)
+
+# Function to train a gesture recognition model
+def train_model():
+    data, labels = load_gesture_data()
+    if len(data) == 0:
+        print("No data available to train the model.")
+        return None
+
+    # Use a machine learning model to train the gesture recognition system.
+    from sklearn.model_selection import train_test_split
+    from sklearn.svm import SVC
+    from sklearn.metrics import accuracy_score
+
+    X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.2, random_state=42)
+
+    model = SVC(kernel='linear')
+    model.fit(X_train, y_train)
+
+    y_pred = model.predict(X_test)
+    accuracy = accuracy_score(y_test, y_pred)
+    print("Accuracy:", accuracy)
+
+    return model
+
+# Function to predict gesture from image
+def predict_gesture(image, model):
+    landmarks = extract_landmarks(image)
+    if landmarks:
+        gesture = model.predict([landmarks])[0]
+        return gesture
+    return None
+
+# Function to collect data from the webcam
+def collect_gesture_data():
+    cap = cv2.VideoCapture(0)
+    label = input("Enter the gesture label (e.g., 'peace', 'thumbs_up'): ")
+
+    print("Collecting gesture data for label: '{}'... Press 'q' to stop.".format(label))
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        # Extract landmarks and save the gesture data
+        landmarks = extract_landmarks(frame)
+        if landmarks:
+            save_gesture_data(label, landmarks)
+            print(f"Saved gesture data for label: {label}")
+
+        # Show the webcam feed
+        cv2.imshow("Collecting Gesture Data", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+# Main part of the code
+if __name__ == "__main__":
+    # Step 1: Collect Gesture Data
+    collect_gesture_data()  # Call this function multiple times for different gestures
+
+    # Step 2: Train the model with data from the database
+    model = train_model()
+
+    # Step 3: Start the gesture recognition system in real-time (if the model was trained successfully)
+    if model:
+        cap = cv2.VideoCapture(0)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # Predict the gesture
+            gesture = predict_gesture(frame, model)
+
+            # Display the predicted gesture on the frame
+            if gesture:
+                cv2.putText(frame, gesture, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+            # Show the frame
+            cv2.imshow("Gesture Recognition", frame)
+
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+
+        cap.release()
+        cv2.destroyAllWindows()
+
+# Close the database connection at the end
+db_connection.close()
+
